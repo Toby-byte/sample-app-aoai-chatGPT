@@ -5,6 +5,8 @@ import requests
 import openai
 from azure.identity import DefaultAzureCredential
 from flask import Flask, Response, request, jsonify, send_from_directory
+from flask_oauthlib.client import OAuth
+from flask import redirect, url_for, session
 from dotenv import load_dotenv
 
 from backend.auth.auth_utils import get_authenticated_user_details
@@ -13,11 +15,47 @@ from backend.history.cosmosdbservice import CosmosConversationClient
 load_dotenv()
 
 app = Flask(__name__, static_folder="static")
+app.debug = True
+
+# Add this line to set the secret key from an environment variable
+app.secret_key = os.environ.get('SECRET_KEY', 'fallback_secret_key')
+
+# Initialize OAuth here
+oauth = OAuth(app)
+msgraph = oauth.remote_app(
+    'microsoft',
+    consumer_key=os.environ.get('CLIENT_ID'),  # Use environment variables for sensitive data
+    consumer_secret=os.environ.get('CLIENT_SECRET'),
+    request_token_params={'scope': 'User.Read'},
+    base_url='https://graph.microsoft.com/v1.0/',
+    request_token_url=None,
+    access_token_method='POST',
+    access_token_url='https://login.microsoftonline.com/common/oauth2/v2.0/token',
+    authorize_url='https://login.microsoftonline.com/common/oauth2/v2.0/authorize'
+)
 
 # Static Files
 @app.route("/")
 def index():
+    if 'microsoft_token' not in session:
+        return redirect(url_for('login'))
     return app.send_static_file("index.html")
+
+@app.route('/login')
+def login():
+    return msgraph.authorize(callback=url_for('authorized', _external=True))
+
+@app.route('/login/authorized')
+def authorized():
+    response = msgraph.authorized_response()
+    if response is None or response.get('access_token') is None:
+        return "Access denied: reason={} error={}".format(
+            request.args['error_reason'],
+            request.args['error_description']
+        )
+    session['microsoft_token'] = (response['access_token'], '')
+    me = msgraph.get('me')
+    return "Logged in as: " + me.data['displayName']
 
 @app.route("/favicon.ico")
 def favicon():
