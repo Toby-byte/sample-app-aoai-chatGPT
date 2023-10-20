@@ -3,15 +3,16 @@ import os
 import logging
 import requests
 import openai
+import identity.web 
 from azure.identity import DefaultAzureCredential
-from flask import Flask, Response, request, jsonify, send_from_directory
+# Render template bliver brugt til at navigere til endpoints i flask
+from flask import Flask, Response, request, jsonify, render_template, send_from_directory
 from flask_oauthlib.client import OAuth
+# redirect bliver brugt til at navigere til hjemmesider
 from flask import redirect, url_for, session
 from dotenv import load_dotenv
-
-from backend.auth.auth_utils import get_authenticated_user_details
 from backend.history.cosmosdbservice import CosmosConversationClient
-
+import app_config
 load_dotenv()
 
 app = Flask(__name__, static_folder="static")
@@ -20,43 +21,46 @@ app.debug = True
 # Add this line to set the secret key from an environment variable
 app.secret_key = os.environ.get('SECRET_KEY', 'fallback_secret_key')
 
-# Initialize OAuth here
-oauth = OAuth(app)
-msgraph = oauth.remote_app(
-    'microsoft',
-    consumer_key=os.environ.get('CLIENT_ID'),  # Use environment variables for sensitive data
-    consumer_secret=os.environ.get('CLIENT_SECRET'),
-    request_token_params={'scope': 'User.Read'},
-    base_url='https://graph.microsoft.com/v1.0/',
-    request_token_url=None,
-    access_token_method='POST',
-    access_token_url='https://login.microsoftonline.com/common/oauth2/v2.0/token',
-    authorize_url='https://login.microsoftonline.com/common/oauth2/v2.0/authorize'
+auth = identity.web.Auth(
+    session=session,
+    authority=os.environ.get('AUTHORITY'),
+    client_id=os.environ.get('CLIENT_ID'),
+    client_credential=os.environ.get('CLIENT_SECRET'),
 )
+
+@app.route('/login')
+def login():
+    print("login info...")
+    return render_template("login.html", **auth.log_in(
+        scopes=['User.Read'],  # Update scopes as needed
+        redirect_uri=url_for('auth_response', _external=True)  # Update 'getAToken' to 'authorized'
+    ))
+
+@app.route(app_config.REDIRECT_PATH)
+def auth_response():
+    result = auth.complete_log_in(request.args)
+    if "error" in result:
+        return render_template("auth_error.html", result=result)
+    print("getting app info...")
+    return render_template("index chatbot.html")
 
 # Static Files
 @app.route("/")
 def index():
     if 'microsoft_token' not in session:
         return redirect(url_for('login'))
-    return app.send_static_file("index.html")
+    print("starting app...")
+    return render_template("index.html")
 
-@app.route('/login')
-def login():
-    return msgraph.authorize(callback=url_for('authorized', _external=True))
-
-@app.route('/login/authorized')
+@app.route('/getAToken')
 def authorized():
-    response = msgraph.authorized_response()
-    if response is None or response.get('access_token') is None:
-        return "Access denied: reason={} error={}".format(
-            request.args['error_reason'],
-            request.args['error_description']
-        )
-    session['microsoft_token'] = (response['access_token'], '')
-    me = msgraph.get('me')
-    return "Logged in as: " + me.data['displayName']
+    print("Auth info...")
+    result = auth.complete_log_in(request.args)
+    if not result:
+        return "Error: No authorization code provided", 400
 
+
+# henter blå lille icon i hjørnet
 @app.route("/favicon.ico")
 def favicon():
     return app.send_static_file('favicon.ico')
@@ -355,7 +359,7 @@ def conversation_without_data(request_body):
     )
 
     history_metadata = request_body.get("history_metadata", {})
-
+    # test
     if not SHOULD_STREAM:
         response_obj = {
             "id": response,
